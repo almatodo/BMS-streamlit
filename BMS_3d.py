@@ -81,12 +81,13 @@ def find_closest_row_by_oa(df: pd.DataFrame, oa_col: str, target_oa: float) -> i
 
 # ============================================================
 # 2) Render background image + manual-position tags (BAS-style)
+#    Fixed-width canvas + horizontal scroll (consistent across screens)
 # ============================================================
 def render_background_with_tags(
     img_b64: str,
     tags: list[dict],
-    max_width_px: int = 1500,
-    height_px: int = 760,          # fallback only (initial height)
+    canvas_width_px: int = 1500,
+    height_px: int = 900,   # fallback only; JS will resize
 ):
     tags_html = ""
     for t in tags:
@@ -104,18 +105,24 @@ def render_background_with_tags(
         padding: 0;
     }}
 
+    /* Scrollable viewport for small screens */
+    .bmsViewport {{
+        width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding-bottom: 6px;
+    }}
+
+    /* FIXED canvas width (consistent across monitors) */
     .bms {{
         position: relative;
-        width: 100%;
-        max-width: {max_width_px}px;
+        width: {canvas_width_px}px;
         margin: 0 auto;
-        overflow: hidden;
         border-radius: 10px;
     }}
 
-    /* Image scales with container width; height follows automatically */
     .bms img {{
-        width: 100%;
+        width: {canvas_width_px}px;
         height: auto;
         display: block;
         border-radius: 10px;
@@ -180,51 +187,42 @@ def render_background_with_tags(
     }}
     </style>
 
-    <div class="bms" id="bmsRoot">
-        <img id="bmsImg" src="data:image/svg+xml;base64,{img_b64}">
-        {tags_html}
+    <div class="bmsViewport" id="bmsViewport">
+      <div class="bms" id="bmsRoot">
+          <img id="bmsImg" src="data:image/svg+xml;base64,{img_b64}">
+          {tags_html}
+      </div>
     </div>
 
     <script>
     function setStreamlitFrameHeight(px) {{
-        const height = Math.ceil(px);
-        // Tell Streamlit to resize the iframe to match content
         window.parent.postMessage({{
             isStreamlitMessage: true,
             type: "streamlit:setFrameHeight",
-            height: height
+            height: Math.ceil(px)
         }}, "*");
     }}
 
     function resizeToContent() {{
         const root = document.getElementById("bmsRoot");
-        if (!root) return;
-        // Add a tiny buffer so it never clips
-        setStreamlitFrameHeight(root.getBoundingClientRect().height + 6);
+        const viewport = document.getElementById("bmsViewport");
+        if (!root || !viewport) return;
+        setStreamlitFrameHeight(root.getBoundingClientRect().height + 18);
     }}
 
-    // Resize after image loads
     const img = document.getElementById("bmsImg");
-    if (img) {{
-        img.addEventListener("load", () => {{
-            resizeToContent();
-        }});
-    }}
+    if (img) img.addEventListener("load", resizeToContent);
 
-    // Resize on window changes + when layout changes
     window.addEventListener("resize", resizeToContent);
 
-    // ResizeObserver catches container width changes in Streamlit columns/tabs
     const ro = new ResizeObserver(() => resizeToContent());
     const root = document.getElementById("bmsRoot");
     if (root) ro.observe(root);
 
-    // Initial attempt
-    setTimeout(resizeToContent, 50);
+    setTimeout(resizeToContent, 80);
     </script>
     """
 
-    # Initial height is just a fallback; JS will immediately resize it correctly
     components.html(html, height=height_px, scrolling=False)
 
 
@@ -926,17 +924,17 @@ tab_ahu, tab_hw, tab_chw = st.tabs(["AHU", "Hot Water Plant", "Chilled Water Pla
 with tab_ahu:
     st.subheader("AHU – closest OA match (filtered by Occupied if schedule column exists)")
     st.caption(header_caption())
-    render_background_with_tags(ahu_b64, make_tags(AHU_LAYOUT), max_width_px=1500, height_px=760)
+    render_background_with_tags(ahu_b64, make_tags(AHU_LAYOUT), canvas_width_px=1500, height_px=760)
 
 with tab_hw:
     st.subheader("Hot Water Plant – closest OA match (filtered by Occupied if schedule column exists)")
     st.caption(header_caption())
-    render_background_with_tags(hw_b64, make_tags(HW_LAYOUT), max_width_px=1500, height_px=900)
+    render_background_with_tags(hw_b64, make_tags(HW_LAYOUT), canvas_width_px=1500, height_px=900)
 
 with tab_chw:
     st.subheader("Chilled Water Plant – closest OA match (filtered by Occupied if schedule column exists)")
     st.caption(header_caption())
-    render_background_with_tags(chw_b64, make_tags(CHW_LAYOUT), max_width_px=1500, height_px=900)
+    render_background_with_tags(chw_b64, make_tags(CHW_LAYOUT), canvas_width_px=1500, height_px=900)
 
 # ============================================================
 # 10) Verification panel
