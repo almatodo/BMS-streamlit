@@ -87,7 +87,7 @@ def render_background_with_tags(
     img_b64: str,
     tags: list[dict],
     canvas_width_px: int = 1500,
-    height_px: int = 900,   # fallback only; JS will resize
+    height_px: int = 900,  # fallback only; JS will resize
 ):
     tags_html = ""
     for t in tags:
@@ -353,8 +353,11 @@ CHW_DEM_BYPASS_MDOT_WANTED = "CHILLED WATER LOOP CHW DEMAND BYPASS INLET:System 
 HW_PUMP_PWR_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Rate [W](Hourly)"
 HW_PUMP_EN_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Energy [J](Hourly)"
 
+# --- NEW: Fan flow for VFD-style proxy (speed% + Hz) ---
+FAN_MDOT_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Mass Flow Rate [kg/s](Hourly)"
+
 MAP_WANTED = {
-    "Occ Sch (0/1)": OCC_COL_WANTED,
+    #"Occ Sch (0/1)": OCC_COL_WANTED,
     "OA Temp": OA_COL_WANTED,
     # AHU temps
     "Return Air Temp": "AHU 1 FLOORS 1-3 RETURN AIR OUTLET:System Node Temperature [C](Hourly)",
@@ -368,6 +371,7 @@ MAP_WANTED = {
     "HW Coil Flow": "AHU 1 FLOORS 1-3 HEATING COIL HW INLET:System Node Mass Flow Rate [kg/s](Hourly)",
     # Fan
     "Supply Fan Power": "AHU 1 FLOORS 1-3 SUPPLY FAN:Fan Electricity Rate [W](Hourly)",
+    "Supply Fan Flow": FAN_MDOT_WANTED,  # NEW (used for fan speed proxy)
     # HW pumps / plant
     "Pump 3 Flow": "HOT WATER LOOP HW SUPPLY PUMP:Pump Mass Flow Rate [kg/s](Hourly)",
     "HW Pump Power": HW_PUMP_PWR_WANTED,
@@ -446,8 +450,23 @@ def _hw_pump3_max_flow_from_csv():
     return mx
 
 
+def _fan_max_mdot_from_csv():
+    """Use filtered data to compute a reasonable 'max' for fan flow (for % speed proxy)."""
+    col = MAP.get("Supply Fan Flow")
+    if col is None:
+        return None
+    s = pd.to_numeric(df_filt[col], errors="coerce")
+    if s.dropna().empty:
+        return None
+    mx = float(s.max())
+    if mx <= 0:
+        return None
+    return mx
+
+
 CHW_PUMP_MAX_KGS_PROXY = _chw_pump_max_flow_from_csv()
 HW_PUMP3_MAX_KGS_PROXY = _hw_pump3_max_flow_from_csv()
+FAN_MAX_KGS_PROXY = _fan_max_mdot_from_csv()
 
 
 def computed_value(disp: str):
@@ -474,6 +493,34 @@ def computed_value(disp: str):
             return max(0.0, min(100.0, pct))
         except Exception:
             return None
+
+    # -------------------------
+    # AHU Fan VFD-style proxy (NEW)
+    # -------------------------
+    if disp == "Supply Fan Speed (%)":
+        f = v("Supply Fan Flow")
+        if f is None or (isinstance(f, float) and pd.isna(f)):
+            return None
+        if FAN_MAX_KGS_PROXY is None:
+            return None
+        try:
+            pct = 100.0 * float(f) / float(FAN_MAX_KGS_PROXY)
+            return max(0.0, min(100.0, pct))
+        except Exception:
+            return None
+
+    if disp == "Supply Fan VFD Output (Hz)":
+        sp = computed_value("Supply Fan Speed (%)")
+        if sp is None:
+            return None
+        try:
+            hz = 60.0 * float(sp) / 100.0
+            return max(0.0, min(60.0, hz))
+        except Exception:
+            return None
+
+    if disp == "Supply Fan VFD Alarm":
+        return "NORMAL"
 
     # -------------------------
     # Valve position proxies
@@ -693,17 +740,20 @@ def computed_value(disp: str):
 # 8) Manual tag layouts
 # ============================================================
 AHU_LAYOUT = [
-    {"disp": "Occ Sch (0/1)", "left": "2%", "top": "3%"},
-    {"disp": "OA Temp", "left": "4%", "top": "40%"},
-    {"disp": "Return Air Temp", "left": "17%", "top": "35%"},
-    {"disp": "Mixed Air Temp", "left": "36.5%", "top": "39%"},
-    {"disp": "Supply Air Temp", "left": "78%", "top": "34.5%"},
-    {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "20%"},
-    {"disp": "Supply Fan Power", "left": "50%", "top": "3%"},
+    {"disp": "OA Temp", "left": "1.5%", "top": "41.5%"},
+    {"disp": "Return Air Temp", "left": "16%", "top": "33%"},
+    {"disp": "Mixed Air Temp", "left": "37%", "top": "39%"},
+    {"disp": "Supply Air Temp", "left": "78%", "top": "39%"},
+    {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "25%"},
+    # NEW: fan VFD-style proxy points
+    {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
+    {"disp": "Supply Fan VFD Output (Hz)", "left": "60%", "top": "81%"},
+    {"disp": "Supply Fan VFD Alarm", "left": "60%", "top": "90%"},
+    #
     {"disp": "OA Damper Position (%)", "left": "17%", "top": "72%"},
-    {"disp": "Return Damper Position (%)", "left": "15%", "top": "23%"},
-    {"disp": "CHW Valve Position (%)", "left": "62%", "top": "25%"},
-    {"disp": "HW Valve Position (%)", "left": "48%", "top": "25%"},
+    {"disp": "Return Damper Position (%)", "left": "15%", "top": "21%"},
+    {"disp": "CHW Valve Position (%)", "left": "63%", "top": "28%"},
+    {"disp": "HW Valve Position (%)", "left": "49%", "top": "28%"},
 ]
 
 HW_LAYOUT = [
@@ -819,6 +869,9 @@ def make_tags(layout):
     computed_points = (
         "OA Damper Position (%)",
         "Return Damper Position (%)",
+        "Supply Fan Speed (%)",
+        "Supply Fan VFD Output (Hz)",
+        "Supply Fan VFD Alarm",
         "CHW Valve Position (%)",
         "HW Valve Position (%)",
         "Boiler 1 Status",
@@ -971,6 +1024,9 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
         {
             "OA Damper Position (%)": computed_value("OA Damper Position (%)"),
             "Return Damper Position (%)": computed_value("Return Damper Position (%)"),
+            "Supply Fan Speed (%)": computed_value("Supply Fan Speed (%)"),
+            "Supply Fan VFD Output (Hz)": computed_value("Supply Fan VFD Output (Hz)"),
+            "Supply Fan VFD Alarm": computed_value("Supply Fan VFD Alarm"),
             "CHW Valve Position (%)": computed_value("CHW Valve Position (%)"),
             "HW Valve Position (%)": computed_value("HW Valve Position (%)"),
             "Boiler 1 Status": computed_value("Boiler 1 Status"),
@@ -981,6 +1037,7 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "Zone Setpoints (H/C)": computed_value("Zone Setpoints (H/C)"),
             "CHW Supply Bypass (%)": computed_value("CHW Supply Bypass (%)"),
             "CHW Demand Bypass (%)": computed_value("CHW Demand Bypass (%)"),
+            "FAN_MAX_KGS_PROXY used": FAN_MAX_KGS_PROXY,
             "CHW_PUMP_MAX_KGS_PROXY used": CHW_PUMP_MAX_KGS_PROXY,
             "HW_PUMP3_MAX_KGS_PROXY used": HW_PUMP3_MAX_KGS_PROXY,
             "FAN_MAX_M3S used (OA only)": FAN_MAX_M3S,
