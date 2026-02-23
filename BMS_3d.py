@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components  # fixes stray </div> by using components.html
 
 st.set_page_config(layout="wide")
-st.title("BMS Frontend Prototype – AHU / HW / CHW (EnergyPlus CSV + Occupancy Filter)")
+st.title("BMS Frontend Prototype")
 
 # ============================================================
 # 1) Helpers
@@ -471,6 +471,15 @@ FAN_MAX_KGS_PROXY = _fan_max_mdot_from_csv()
 
 def computed_value(disp: str):
     """Computed points that aren't direct CSV columns."""
+
+    # -------------------------
+    # AHU dummy safety points (NEW)
+    # -------------------------
+    if disp == "FreezeStat":
+        return "NORMAL"
+    if disp == "Pressure Switch":
+        return "NORMAL"
+
     # -------------------------
     # AHU dampers
     # -------------------------
@@ -745,6 +754,9 @@ AHU_LAYOUT = [
     {"disp": "Mixed Air Temp", "left": "37%", "top": "39%"},
     {"disp": "Supply Air Temp", "left": "78%", "top": "39%"},
     {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "25%"},
+    # NEW: dummy safety/status points 
+    {"disp": "FreezeStat", "left": "80%", "top": "2%"},
+    {"disp": "Pressure Switch", "left": "67%", "top": "2%"},
     # NEW: fan VFD-style proxy points
     {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
     {"disp": "Supply Fan VFD Output (Hz)", "left": "60%", "top": "81%"},
@@ -867,6 +879,8 @@ def make_tags(layout):
     tags = []
 
     computed_points = (
+        "FreezeStat",
+        "Pressure Switch",
         "OA Damper Position (%)",
         "Return Damper Position (%)",
         "Supply Fan Speed (%)",
@@ -975,7 +989,7 @@ def make_tags(layout):
 tab_ahu, tab_hw, tab_chw = st.tabs(["AHU", "Hot Water Plant", "Chilled Water Plant"])
 
 with tab_ahu:
-    st.subheader("AHU – closest OA match (filtered by Occupied if schedule column exists)")
+ #   st.subheader("AHU")
     st.caption(header_caption())
     render_background_with_tags(ahu_b64, make_tags(AHU_LAYOUT), canvas_width_px=1500, height_px=760)
 
@@ -1022,6 +1036,8 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
     st.write("### Computed points")
     st.write(
         {
+            "FreezeStat": computed_value("FreezeStat"),
+            "Pressure Switch": computed_value("Pressure Switch"),
             "OA Damper Position (%)": computed_value("OA Damper Position (%)"),
             "Return Damper Position (%)": computed_value("Return Damper Position (%)"),
             "Supply Fan Speed (%)": computed_value("Supply Fan Speed (%)"),
