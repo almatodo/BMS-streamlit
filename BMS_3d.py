@@ -86,7 +86,7 @@ def render_background_with_tags(
     img_b64: str,
     tags: list[dict],
     max_width_px: int = 1500,
-    height_px: int = 760,
+    height_px: int = 760,          # fallback only (initial height)
 ):
     tags_html = ""
     for t in tags:
@@ -99,21 +99,26 @@ def render_background_with_tags(
 
     html = f"""
     <style>
+    html, body {{
+        margin: 0;
+        padding: 0;
+    }}
+
     .bms {{
         position: relative;
         width: 100%;
         max-width: {max_width_px}px;
-        margin: auto;
+        margin: 0 auto;
         overflow: hidden;
         border-radius: 10px;
     }}
+
+    /* Image scales with container width; height follows automatically */
     .bms img {{
         width: 100%;
         height: auto;
         display: block;
         border-radius: 10px;
-        transform: scale(1.0);
-        transform-origin: center;
     }}
 
     .tag {{
@@ -175,12 +180,51 @@ def render_background_with_tags(
     }}
     </style>
 
-    <div class="bms">
-        <img src="data:image/svg+xml;base64,{img_b64}">
+    <div class="bms" id="bmsRoot">
+        <img id="bmsImg" src="data:image/svg+xml;base64,{img_b64}">
         {tags_html}
     </div>
+
+    <script>
+    function setStreamlitFrameHeight(px) {{
+        const height = Math.ceil(px);
+        // Tell Streamlit to resize the iframe to match content
+        window.parent.postMessage({{
+            isStreamlitMessage: true,
+            type: "streamlit:setFrameHeight",
+            height: height
+        }}, "*");
+    }}
+
+    function resizeToContent() {{
+        const root = document.getElementById("bmsRoot");
+        if (!root) return;
+        // Add a tiny buffer so it never clips
+        setStreamlitFrameHeight(root.getBoundingClientRect().height + 6);
+    }}
+
+    // Resize after image loads
+    const img = document.getElementById("bmsImg");
+    if (img) {{
+        img.addEventListener("load", () => {{
+            resizeToContent();
+        }});
+    }}
+
+    // Resize on window changes + when layout changes
+    window.addEventListener("resize", resizeToContent);
+
+    // ResizeObserver catches container width changes in Streamlit columns/tabs
+    const ro = new ResizeObserver(() => resizeToContent());
+    const root = document.getElementById("bmsRoot");
+    if (root) ro.observe(root);
+
+    // Initial attempt
+    setTimeout(resizeToContent, 50);
+    </script>
     """
 
+    # Initial height is just a fallback; JS will immediately resize it correctly
     components.html(html, height=height_px, scrolling=False)
 
 
