@@ -486,7 +486,7 @@ def computed_value(disp: str):
     # NEW: AHU fan enable/status (BMS-style)
     # -------------------------
     if disp == "Supply Fan Enable":
-        return "ON" if occupied_toggle else "OFF"
+        return "ON"
 
     if disp == "Supply Fan Status":
         # Prefer fan power > 0, fallback to flow > 0
@@ -1100,3 +1100,4 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
     )
 
 st.caption("If you don’t see images: make sure the .svg files are in the same folder you run Streamlit from.")
+
