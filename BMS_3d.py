@@ -353,16 +353,21 @@ CHW_DEM_BYPASS_MDOT_WANTED = "CHILLED WATER LOOP CHW DEMAND BYPASS INLET:System 
 HW_PUMP_PWR_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Rate [W](Hourly)"
 HW_PUMP_EN_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Energy [J](Hourly)"
 
-# --- NEW: Fan flow for VFD-style proxy (speed% + Hz) ---
+# --- Fan flow for VFD-style proxy (speed% + Hz) ---
 FAN_MDOT_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Mass Flow Rate [kg/s](Hourly)"
 
+# --- NEW: AHU pressure (real point from CSV) ---
+AHU_PRESSURE_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Pressure [Pa](Hourly)"
+
 MAP_WANTED = {
-    #"Occ Sch (0/1)": OCC_COL_WANTED,
     "OA Temp": OA_COL_WANTED,
     # AHU temps
     "Return Air Temp": "AHU 1 FLOORS 1-3 RETURN AIR OUTLET:System Node Temperature [C](Hourly)",
     "Mixed Air Temp": "AHU 1 FLOORS 1-3 MIXED AIR OUTLET:System Node Temperature [C](Hourly)",
     "Supply Air Temp": "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Temperature [C](Hourly)",
+    # NEW: AHU pressure
+    "Supply Fan Outlet Pressure": AHU_PRESSURE_WANTED,
+
     # Zone thermostat setpoints (one zone only)
     "Zone Heating Setpoint": f"{ZONE_FOR_SETPOINTS}:Zone Thermostat Heating Setpoint Temperature [C](Hourly)",
     "Zone Cooling Setpoint": f"{ZONE_FOR_SETPOINTS}:Zone Thermostat Cooling Setpoint Temperature [C](Hourly)",
@@ -371,7 +376,7 @@ MAP_WANTED = {
     "HW Coil Flow": "AHU 1 FLOORS 1-3 HEATING COIL HW INLET:System Node Mass Flow Rate [kg/s](Hourly)",
     # Fan
     "Supply Fan Power": "AHU 1 FLOORS 1-3 SUPPLY FAN:Fan Electricity Rate [W](Hourly)",
-    "Supply Fan Flow": FAN_MDOT_WANTED,  # NEW (used for fan speed proxy)
+    "Supply Fan Flow": FAN_MDOT_WANTED,  # used for fan speed proxy
     # HW pumps / plant
     "Pump 3 Flow": "HOT WATER LOOP HW SUPPLY PUMP:Pump Mass Flow Rate [kg/s](Hourly)",
     "HW Pump Power": HW_PUMP_PWR_WANTED,
@@ -394,7 +399,7 @@ MAP_WANTED = {
     "CHW SUPP TEMP": CHW_SUP_TEMP_WANTED,
     "CHW SUPP SETPNT": CHW_SUP_SETP_WANTED,
     "CHW RTN TEMP": CHW_RTN_TEMP_WANTED,
-    # CHW bypass (new)
+    # CHW bypass
     "CHW Supply Bypass Flow": CHW_SUP_BYPASS_MDOT_WANTED,
     "CHW Demand Bypass Flow": CHW_DEM_BYPASS_MDOT_WANTED,
 }
@@ -423,7 +428,6 @@ HW_MAX_KGS = HW_MAX_M3S * RHO_WATER
 
 
 def _chw_pump_max_flow_from_csv():
-    """Use filtered data to compute a reasonable 'max' for CHW pump flow (for % speed proxy)."""
     col = MAP.get("CHW Pump Flow")
     if col is None:
         return None
@@ -437,7 +441,6 @@ def _chw_pump_max_flow_from_csv():
 
 
 def _hw_pump3_max_flow_from_csv():
-    """Use filtered data to compute a reasonable 'max' for HW pump 3 flow (for % speed proxy)."""
     col = MAP.get("Pump 3 Flow")
     if col is None:
         return None
@@ -451,7 +454,6 @@ def _hw_pump3_max_flow_from_csv():
 
 
 def _fan_max_mdot_from_csv():
-    """Use filtered data to compute a reasonable 'max' for fan flow (for % speed proxy)."""
     col = MAP.get("Supply Fan Flow")
     if col is None:
         return None
@@ -473,12 +475,34 @@ def computed_value(disp: str):
     """Computed points that aren't direct CSV columns."""
 
     # -------------------------
-    # AHU dummy safety points (NEW)
+    # AHU dummy safety points
     # -------------------------
     if disp == "FreezeStat":
         return "NORMAL"
     if disp == "Pressure Switch":
         return "NORMAL"
+
+    # -------------------------
+    # NEW: AHU fan enable/status (BMS-style)
+    # -------------------------
+    if disp == "Supply Fan Enable":
+        return "ON" if occupied_toggle else "OFF"
+
+    if disp == "Supply Fan Status":
+        # Prefer fan power > 0, fallback to flow > 0
+        p = v("Supply Fan Power")
+        f = v("Supply Fan Flow")
+        try:
+            if p is not None and not (isinstance(p, float) and pd.isna(p)):
+                return "ON" if float(p) > 0.0 else "OFF"
+        except Exception:
+            pass
+        try:
+            if f is not None and not (isinstance(f, float) and pd.isna(f)):
+                return "ON" if float(f) > 0.0 else "OFF"
+        except Exception:
+            pass
+        return None
 
     # -------------------------
     # AHU dampers
@@ -504,7 +528,7 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # AHU Fan VFD-style proxy (NEW)
+    # AHU Fan VFD-style proxy
     # -------------------------
     if disp == "Supply Fan Speed (%)":
         f = v("Supply Fan Flow")
@@ -591,7 +615,7 @@ def computed_value(disp: str):
         return 0.0
 
     # -------------------------
-    # HW pump VFD-style points (mirrors CHW)
+    # HW pump VFD-style points
     # -------------------------
     if disp == "HW Pump 3 Speed (%)":
         f = v("Pump 3 Flow")
@@ -669,8 +693,7 @@ def computed_value(disp: str):
         if f is None or (isinstance(f, float) and pd.isna(f)):
             return None
         try:
-            # For water, kg/s ≈ L/s
-            return float(f)
+            return float(f)  # kg/s ≈ L/s
         except Exception:
             return None
 
@@ -754,13 +777,18 @@ AHU_LAYOUT = [
     {"disp": "Mixed Air Temp", "left": "37%", "top": "39%"},
     {"disp": "Supply Air Temp", "left": "78%", "top": "39%"},
     {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "25%"},
-    # NEW: dummy safety/status points 
+    # dummy safety/status points
     {"disp": "FreezeStat", "left": "80%", "top": "2%"},
     {"disp": "Pressure Switch", "left": "67%", "top": "2%"},
-    # NEW: fan VFD-style proxy points
+    # fan VFD-style proxy points (UNCHANGED positions)
     {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
     {"disp": "Supply Fan VFD Output (Hz)", "left": "60%", "top": "81%"},
     {"disp": "Supply Fan VFD Alarm", "left": "60%", "top": "90%"},
+    # NEW: enable/status placed to the RIGHT (doesn't move VFD tags)
+    {"disp": "Supply Fan Enable", "left": "47%", "top": "74%"},
+    {"disp": "Supply Fan Status", "left": "47%", "top": "84%"},
+    # pressure (keep wherever you want; this is a reasonable right-side spot)
+    #{"disp": "Supply Fan Outlet Pressure", "left": "83%", "top": "90%"},
     #
     {"disp": "OA Damper Position (%)", "left": "17%", "top": "72%"},
     {"disp": "Return Damper Position (%)", "left": "15%", "top": "21%"},
@@ -846,6 +874,11 @@ def make_tags(layout):
                 return "led-bad"
             return "led-ok"
 
+        if "Pressure" in disp:
+            if x < 0:
+                return "led-bad"
+            return "led-ok"
+
         if "Power" in disp or "Elec" in disp:
             if x < 0:
                 return "led-bad"
@@ -881,6 +914,9 @@ def make_tags(layout):
     computed_points = (
         "FreezeStat",
         "Pressure Switch",
+        # NEW AHU fan points
+        "Supply Fan Enable",
+        "Supply Fan Status",
         "OA Damper Position (%)",
         "Return Damper Position (%)",
         "Supply Fan Speed (%)",
@@ -964,6 +1000,8 @@ def make_tags(layout):
                 html = build_html(disp, f"{float(val):.1f}", "°C", led)
             elif "TEMP" in disp.upper() or "Temp" in disp:
                 html = build_html(disp, f"{float(val):.1f}", "°C", led)
+            elif "Pressure" in disp:
+                html = build_html(disp, f"{float(val):.0f}", "Pa", led)
             elif "Bypass Flow" in disp:
                 html = build_html(disp, f"{float(val):.3f}", "kg/s", led)
             elif disp.endswith("Flow"):
@@ -989,7 +1027,6 @@ def make_tags(layout):
 tab_ahu, tab_hw, tab_chw = st.tabs(["AHU", "Hot Water Plant", "Chilled Water Plant"])
 
 with tab_ahu:
- #   st.subheader("AHU")
     st.caption(header_caption())
     render_background_with_tags(ahu_b64, make_tags(AHU_LAYOUT), canvas_width_px=1500, height_px=760)
 
@@ -1038,6 +1075,8 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
         {
             "FreezeStat": computed_value("FreezeStat"),
             "Pressure Switch": computed_value("Pressure Switch"),
+            "Supply Fan Enable": computed_value("Supply Fan Enable"),
+            "Supply Fan Status": computed_value("Supply Fan Status"),
             "OA Damper Position (%)": computed_value("OA Damper Position (%)"),
             "Return Damper Position (%)": computed_value("Return Damper Position (%)"),
             "Supply Fan Speed (%)": computed_value("Supply Fan Speed (%)"),
