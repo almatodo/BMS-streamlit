@@ -2,6 +2,7 @@
 import base64
 import re
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -48,7 +49,7 @@ def canonical_col(s: str) -> str:
     return s
 
 
-def find_col(df: pd.DataFrame, wanted: str):
+def find_col(df: pd.DataFrame, wanted: str) -> Optional[str]:
     """
     1) Exact match after whitespace normalization.
     2) Canonical match with units/frequency stripped.
@@ -85,7 +86,7 @@ def find_closest_row_by_oa(df: pd.DataFrame, oa_col: str, target_oa: float) -> i
 # ============================================================
 def render_background_with_tags(
     img_b64: str,
-    tags: list[dict],
+    tags: List[Dict[str, Any]],
     canvas_width_px: int = 1500,
     height_px: int = 900,  # fallback only; JS will resize
 ):
@@ -356,8 +357,12 @@ HW_PUMP_EN_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Energy [J](H
 # --- Fan flow for VFD-style proxy (speed% + Hz) ---
 FAN_MDOT_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Mass Flow Rate [kg/s](Hourly)"
 
-# --- NEW: AHU pressure (real point from CSV) ---
+# --- AHU pressure (real point from CSV) ---
 AHU_PRESSURE_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Pressure [Pa](Hourly)"
+
+# --- HW plant pressures for DP sensor ---
+HW_PUMP_INLET_P_WANTED = "Hot Water Loop HW Supply Inlet:System Node Pressure [Pa](Hourly)"
+HW_BOILER_OUTLET_P_WANTED = "Main Boiler HW Outlet:System Node Pressure [Pa](Hourly)"
 
 MAP_WANTED = {
     "OA Temp": OA_COL_WANTED,
@@ -365,9 +370,8 @@ MAP_WANTED = {
     "Return Air Temp": "AHU 1 FLOORS 1-3 RETURN AIR OUTLET:System Node Temperature [C](Hourly)",
     "Mixed Air Temp": "AHU 1 FLOORS 1-3 MIXED AIR OUTLET:System Node Temperature [C](Hourly)",
     "Supply Air Temp": "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Temperature [C](Hourly)",
-    # NEW: AHU pressure
+    # AHU pressure
     "Supply Fan Outlet Pressure": AHU_PRESSURE_WANTED,
-
     # Zone thermostat setpoints (one zone only)
     "Zone Heating Setpoint": f"{ZONE_FOR_SETPOINTS}:Zone Thermostat Heating Setpoint Temperature [C](Hourly)",
     "Zone Cooling Setpoint": f"{ZONE_FOR_SETPOINTS}:Zone Thermostat Cooling Setpoint Temperature [C](Hourly)",
@@ -376,11 +380,14 @@ MAP_WANTED = {
     "HW Coil Flow": "AHU 1 FLOORS 1-3 HEATING COIL HW INLET:System Node Mass Flow Rate [kg/s](Hourly)",
     # Fan
     "Supply Fan Power": "AHU 1 FLOORS 1-3 SUPPLY FAN:Fan Electricity Rate [W](Hourly)",
-    "Supply Fan Flow": FAN_MDOT_WANTED,  # used for fan speed proxy
+    "Supply Fan Flow": FAN_MDOT_WANTED,
     # HW pumps / plant
     "Pump 3 Flow": "HOT WATER LOOP HW SUPPLY PUMP:Pump Mass Flow Rate [kg/s](Hourly)",
     "HW Pump Power": HW_PUMP_PWR_WANTED,
     "HW Pump Energy": HW_PUMP_EN_WANTED,
+    # HW plant pressures for DP sensor
+    "HW Pump Inlet Pressure": HW_PUMP_INLET_P_WANTED,
+    "HW Boiler Outlet Pressure": HW_BOILER_OUTLET_P_WANTED,
     # CHW pumps / plant
     "CHW Pump Flow": CHW_PUMP_FLOW_WANTED,
     "CHW Pump Power": CHW_PUMP_PWR_WANTED,
@@ -407,7 +414,7 @@ MAP_WANTED = {
 MAP = {disp: find_col(df, wanted_col) for disp, wanted_col in MAP_WANTED.items()}
 
 
-def v(disp):
+def v(disp: str):
     col = MAP.get(disp)
     if col is None:
         return None
@@ -472,7 +479,6 @@ FAN_MAX_KGS_PROXY = _fan_max_mdot_from_csv()
 
 
 def computed_value(disp: str):
-    """Computed points that aren't direct CSV columns."""
 
     # -------------------------
     # AHU dummy safety points
@@ -483,7 +489,7 @@ def computed_value(disp: str):
         return "NORMAL"
 
     # -------------------------
-    # NEW: AHU fan enable/status (BMS-style)
+    # AHU fan enable/status (BMS-style)
     # -------------------------
     if disp == "Supply Fan Enable":
         return "ON"
@@ -579,7 +585,23 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # HW statuses
+    # HW Differential Pressure (DP) sensor (Pa)
+    # DP = P(Boiler Outlet / Supply) - P(Pump Inlet / Return)
+    # -------------------------
+    if disp == "HW DP (Supply-Return)":
+        p_hi = v("HW Boiler Outlet Pressure")   # supply side
+        p_lo = v("HW Pump Inlet Pressure")      # return side
+        if p_hi is None or p_lo is None:
+            return None
+        if (isinstance(p_hi, float) and pd.isna(p_hi)) or (isinstance(p_lo, float) and pd.isna(p_lo)):
+            return None
+        try:
+            return float(p_hi) - float(p_lo)
+        except Exception:
+            return None
+
+    # -------------------------
+    # HW Boiler status (from gas rate)
     # -------------------------
     if disp == "Boiler 1 Status":
         gas = v("Boiler 1 Gas Rate")
@@ -599,6 +621,69 @@ def computed_value(disp: str):
         except Exception:
             return None
 
+    # -------------------------
+    # NEW: Flow switch per boiler (BMS-style)
+    # - Boiler 1 Flow Switch: ON only if Boiler 1 is ON AND Pump 3 flow > 0
+    # - Boiler 2 Flow Switch: ON only if Boiler 2 is ON AND Pump 3 flow > 0 (your boiler 2 is OFF -> OFF)
+    # -------------------------
+    if disp == "Boiler 1 Flow Switch":
+        b1 = computed_value("Boiler 1 Status")
+        f = v("Pump 3 Flow")
+        if b1 is None or f is None:
+            return None
+        if isinstance(f, float) and pd.isna(f):
+            return None
+        try:
+            if str(b1).upper() != "ON":
+                return "OFF"
+            return "ON" if float(f) > 0.0 else "OFF"
+        except Exception:
+            return None
+
+    if disp == "Boiler 2 Flow Switch":
+        b2 = computed_value("Boiler 2 Status")
+        f = v("Pump 3 Flow")
+        if b2 is None or f is None:
+            return None
+        if isinstance(f, float) and pd.isna(f):
+            return None
+        try:
+            if str(b2).upper() != "ON":
+                return "OFF"
+            return "ON" if float(f) > 0.0 else "OFF"
+        except Exception:
+            return None
+
+    # -------------------------
+    # Boiler alarms + gas pressure alarms (both boilers)
+    # -------------------------
+    if disp == "Boiler 1 Alarm":
+        s = computed_value("Boiler 1 Status")
+        if s is None:
+            return None
+        return "NORMAL" if str(s).upper() == "ON" else "OFF"
+
+    if disp == "Boiler 2 Alarm":
+        s = computed_value("Boiler 2 Status")
+        if s is None:
+            return None
+        return "NORMAL" if str(s).upper() == "ON" else "OFF"
+
+    if disp == "Boiler 1 Gas Pressure Alarm":
+        s = computed_value("Boiler 1 Status")
+        if s is None:
+            return None
+        return "NORMAL" if str(s).upper() == "ON" else "OFF"
+
+    if disp == "Boiler 2 Gas Pressure Alarm":
+        s = computed_value("Boiler 2 Status")
+        if s is None:
+            return None
+        return "NORMAL" if str(s).upper() == "ON" else "OFF"
+
+    # -------------------------
+    # HW pump statuses
+    # -------------------------
     if disp == "Pump 3 Status":
         f = v("Pump 3 Flow")
         if f is None or (isinstance(f, float) and pd.isna(f)):
@@ -649,6 +734,39 @@ def computed_value(disp: str):
         return 0.0
     if disp == "HW Pump 4 VFD Alarm":
         return "NORMAL"
+
+    # -------------------------
+    # HW SUPPLY combined setpoint + temp (ONE BOX, HORIZONTAL)
+    # -------------------------
+    if disp == "HW Supply (SP / T)":
+        sp = v("HW SUPP SETPNT")
+        t = v("HW SUPP TEMP")
+        if sp is None or t is None:
+            return None
+        if (isinstance(sp, float) and pd.isna(sp)) or (isinstance(t, float) and pd.isna(t)):
+            return None
+        try:
+            sp_f = float(sp)
+            t_f = float(t)
+            return f"SP: {sp_f:.1f}°C&nbsp;&nbsp;&nbsp;T: {t_f:.1f}°C"
+        except Exception:
+            return None
+            # -------------------------
+    # CHW SUPPLY combined setpoint + temp (ONE BOX, HORIZONTAL)
+    # -------------------------
+    if disp == "CHW Supply (SP / T)":
+        sp = v("CHW SUPP SETPNT")
+        t = v("CHW SUPP TEMP")
+        if sp is None or t is None:
+            return None
+        if (isinstance(sp, float) and pd.isna(sp)) or (isinstance(t, float) and pd.isna(t)):
+            return None
+        try:
+            sp_f = float(sp)
+            t_f = float(t)
+            return f"SP: {sp_f:.1f}°C&nbsp;&nbsp;&nbsp;T: {t_f:.1f}°C"
+        except Exception:
+            return None
 
     # -------------------------
     # CHW bypass flow & bypass “valve” position (PROXY)
@@ -766,6 +884,7 @@ def computed_value(disp: str):
             return None
 
     return None
+ 
 
 
 # ============================================================
@@ -784,11 +903,9 @@ AHU_LAYOUT = [
     {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
     {"disp": "Supply Fan VFD Output (Hz)", "left": "60%", "top": "81%"},
     {"disp": "Supply Fan VFD Alarm", "left": "60%", "top": "90%"},
-    # NEW: enable/status placed to the RIGHT (doesn't move VFD tags)
+    # enable/status placed to the RIGHT (doesn't move VFD tags)
     {"disp": "Supply Fan Enable", "left": "47%", "top": "74%"},
     {"disp": "Supply Fan Status", "left": "47%", "top": "84%"},
-    # pressure (keep wherever you want; this is a reasonable right-side spot)
-    #{"disp": "Supply Fan Outlet Pressure", "left": "83%", "top": "90%"},
     #
     {"disp": "OA Damper Position (%)", "left": "17%", "top": "72%"},
     {"disp": "Return Damper Position (%)", "left": "15%", "top": "21%"},
@@ -797,51 +914,61 @@ AHU_LAYOUT = [
 ]
 
 HW_LAYOUT = [
-    {"disp": "HW SUPP TEMP", "left": "44%", "top": "9%"},
-    {"disp": "HW SUPP SETPNT", "left": "44%", "top": "0%"},
-    {"disp": "HW RTN TEMP", "left": "44%", "top": "77%"},
-    {"disp": "Boiler 1 Status", "left": "43%", "top": "36%"},
-    {"disp": "Boiler 2 Status", "left": "58%", "top": "84%"},
+    # combined supply box (SP / T)
+    {"disp": "HW Supply (SP / T)", "left": "44%", "top": "10%"},
+    # DP sensor readout
+    {"disp": "HW DP (Supply-Return)", "left": "4%", "top": "22%"},
+    {"disp": "HW RTN TEMP", "left": "42%", "top": "54%"},
+
+    # Boiler 1 block
+    {"disp": "Boiler 1 Status", "left": "88%", "top": "20%"},
+    {"disp": "Boiler 1 Flow Switch", "left": "88%", "top": "28%"},
+    {"disp": "Boiler 1 Alarm", "left": "88%", "top": "36%"},
+    {"disp": "Boiler 1 Gas Pressure Alarm", "left": "88%", "top": "44%"},
+
+    # Boiler 2 block (OFF)
+    {"disp": "Boiler 2 Status", "left": "88%", "top": "60%"},
+    {"disp": "Boiler 2 Flow Switch", "left": "88%", "top": "68%"},
+    {"disp": "Boiler 2 Alarm", "left": "88%", "top": "76%"},
+    {"disp": "Boiler 2 Gas Pressure Alarm", "left": "88%", "top": "84%"},
+
     # Pump 3 (real)
-    {"disp": "Pump 3 Status", "left": "30%", "top": "32%"},
-    {"disp": "Pump 3 Flow", "left": "30%", "top": "42%"},
-    {"disp": "HW Pump 3 Speed (%)", "left": "30%", "top": "52%"},
-    {"disp": "HW Pump 3 VFD Output (Hz)", "left": "30%", "top": "62%"},
-    {"disp": "HW Pump 3 VFD Alarm", "left": "30%", "top": "72%"},
+    {"disp": "Pump 3 Status", "left": "25%", "top": "16%"},
+    {"disp": "Pump 3 Flow", "left": "25%", "top": "23%"},
+    {"disp": "HW Pump 3 Speed (%)", "left": "25%", "top": "30%"},
+    {"disp": "HW Pump 3 VFD Output (Hz)", "left": "37%", "top": "23%"},
+    {"disp": "HW Pump 3 VFD Alarm", "left": "37%", "top": "30%"},
+
     # Pump 4 (dummy)
-    {"disp": "Pump 4 Status", "left": "30%", "top": "90%"},
-    {"disp": "Pump 4 Flow", "left": "30%", "top": "95%"},
-    {"disp": "HW Pump 4 Speed (%)", "left": "30%", "top": "100%"},
-    {"disp": "HW Pump 4 VFD Output (Hz)", "left": "30%", "top": "105%"},
-    {"disp": "HW Pump 4 VFD Alarm", "left": "30%", "top": "110%"},
+    {"disp": "Pump 4 Status", "left": "17%", "top": "71%"},
+    {"disp": "Pump 4 Flow", "left": "17%", "top": "78%"},
+    {"disp": "HW Pump 4 Speed (%)", "left": "17%", "top": "85%"},
+    {"disp": "HW Pump 4 VFD Output (Hz)", "left": "29%", "top": "78%"},
+    {"disp": "HW Pump 4 VFD Alarm", "left": "29%", "top": "85%"},
 ]
 
 CHW_LAYOUT = [
-    {"disp": "CHW Flow Meter (L/s)", "left": "68%", "top": "2%"},
-    {"disp": "CHW SUPP SETPNT", "left": "52%", "top": "1%"},
-    {"disp": "CHW SUPP TEMP", "left": "52%", "top": "10%"},
-    {"disp": "CHW RTN TEMP", "left": "53%", "top": "64%"},
+    {"disp": "CHW Flow Meter (L/s)", "left": "64%", "top": "1%"},
+    {"disp": "CHW Supply (SP / T)", "left": "78%", "top": "1%"},
+    {"disp": "CHW RTN TEMP", "left": "58.5%", "top": "51%"},
     # BYPASS (new)
-    {"disp": "CHW Supply Bypass Flow", "left": "70%", "top": "20%"},
-    {"disp": "CHW Supply Bypass (%)", "left": "70%", "top": "28%"},
-    {"disp": "CHW Demand Bypass Flow", "left": "70%", "top": "72%"},
-    {"disp": "CHW Demand Bypass (%)", "left": "70%", "top": "80%"},
+    {"disp": "CHW Supply Bypass (%)", "left": "24%", "top": "30%"},
     # Pump 1 table
-    {"disp": "CHW Pump 1 Enable", "left": "7%", "top": "36%"},
-    {"disp": "CHW Pump 1 Status", "left": "7%", "top": "44%"},
-    {"disp": "CHW Pump 1 Speed (%)", "left": "7%", "top": "52%"},
-    {"disp": "CHW VFD Output (Hz)", "left": "7%", "top": "60%"},
-    {"disp": "CHW VFD Alarm", "left": "7%", "top": "68%"},
+    {"disp": "CHW Pump 1 Enable", "left": "43%", "top": "15%"},
+    {"disp": "CHW Pump 1 Status", "left": "43%", "top": "22%"},
+    {"disp": "CHW Pump 1 Speed (%)", "left": "55%", "top": "15%"},
+    {"disp": "CHW VFD Output (Hz)", "left": "55%", "top": "22%"},
+    {"disp": "CHW VFD Alarm", "left": "55%", "top": "29%"},
     # Pump 2 table (dummy)
-    {"disp": "CHW Pump 2 Enable", "left": "7%", "top": "75%"},
-    {"disp": "CHW Pump 2 Status", "left": "7%", "top": "83%"},
-    {"disp": "CHW Pump 2 Speed (%)", "left": "7%", "top": "91%"},
-    {"disp": "CHW2 VFD Output (Hz)", "left": "7%", "top": "99%"},
-    {"disp": "CHW2 VFD Alarm", "left": "7%", "top": "107%"},
+    {"disp": "CHW Pump 2 Enable", "left": "34%", "top": "79%"},
+    {"disp": "CHW Pump 2 Status", "left": "34%", "top": "86%"},
+    {"disp": "CHW Pump 2 Speed (%)", "left": "34%", "top": "93%"},
+    {"disp": "CHW2 VFD Output (Hz)", "left": "46%", "top": "86%"},
+    {"disp": "CHW2 VFD Alarm", "left": "46%", "top": "93%"},
 ]
 
 
-def make_tags(layout):
+def make_tags(layout: List[Dict[str, Any]]):
     def led_from_onoff(state):
         if state == "ON":
             return "led-ok"
@@ -857,11 +984,22 @@ def make_tags(layout):
         if disp == "Pump 4 Flow":
             return "led-off"
 
-        # Strings: treat ON/OFF specially, otherwise OK
+        # Strings: ON/OFF + Alarm-like words
         if isinstance(val, str):
             v2 = val.strip().upper()
+
             if v2 in ("ON", "OFF"):
                 return led_from_onoff(v2)
+
+            if any(k in v2 for k in ("ALARM", "FAULT", "TRIP", "FAIL")):
+                return "led-bad"
+
+            if any(k in v2 for k in ("WARN", "WARNING", "LOW", "HIGH")):
+                return "led-warn"
+
+            if v2 in ("NORMAL", "OK"):
+                return "led-ok"
+
             return "led-ok"
 
         try:
@@ -874,9 +1012,7 @@ def make_tags(layout):
                 return "led-bad"
             return "led-ok"
 
-        if "Pressure" in disp:
-            if x < 0:
-                return "led-bad"
+        if "DP" in disp or "Pressure" in disp:
             return "led-ok"
 
         if "Power" in disp or "Elec" in disp:
@@ -899,6 +1035,7 @@ def make_tags(layout):
 
         if "Bypass (%)" in disp:
             return "led-ok"
+        
 
         return "led-ok"
 
@@ -914,7 +1051,7 @@ def make_tags(layout):
     computed_points = (
         "FreezeStat",
         "Pressure Switch",
-        # NEW AHU fan points
+        # AHU fan points
         "Supply Fan Enable",
         "Supply Fan Status",
         "OA Damper Position (%)",
@@ -924,6 +1061,18 @@ def make_tags(layout):
         "Supply Fan VFD Alarm",
         "CHW Valve Position (%)",
         "HW Valve Position (%)",
+        # HW combined supply
+        "HW Supply (SP / T)",
+        # DP point
+        "HW DP (Supply-Return)",
+        # NEW: per-boiler flow switches + boiler alarms
+        "Boiler 1 Flow Switch",
+        "Boiler 2 Flow Switch",
+        "Boiler 1 Alarm",
+        "Boiler 2 Alarm",
+        "Boiler 1 Gas Pressure Alarm",
+        "Boiler 2 Gas Pressure Alarm",
+        # statuses
         "Boiler 1 Status",
         "Boiler 2 Status",
         "Pump 3 Status",
@@ -949,9 +1098,10 @@ def make_tags(layout):
         "HW Pump 4 Speed (%)",
         "HW Pump 4 VFD Output (Hz)",
         "HW Pump 4 VFD Alarm",
-        # CHW bypass computed points (only % are computed; flow comes from CSV mapping)
+        # CHW bypass computed points (% only; flow comes from CSV mapping)
         "CHW Supply Bypass (%)",
         "CHW Demand Bypass (%)",
+        "CHW Supply (SP / T)",
     )
 
     for item in layout:
@@ -964,24 +1114,44 @@ def make_tags(layout):
                 html = build_html(disp, "MISSING", "", "led-off")
                 cls = "inactive"
             else:
-                if disp.endswith("(%)"):
-                    led = led_class_from_value(disp, comp)
-                    html = build_html(disp, f"{float(comp):.1f}", "%", led)
-                elif disp.endswith("(Hz)"):
-                    led = led_class_from_value(disp, comp)
-                    html = build_html(disp, f"{float(comp):.1f}", "Hz", led)
-                elif disp.endswith("(L/s)"):
-                    led = led_class_from_value(disp, comp)
-                    html = build_html(disp, f"{float(comp):.1f}", "L/s", led)
+                # Decide if it's numeric
+                comp_is_num = False
+                comp_num = None
+                try:
+                    comp_num = float(comp)
+                    comp_is_num = True
+                except Exception:
+                    comp_is_num = False
+
+                if disp.endswith("(%)") and comp_is_num:
+                    led = led_class_from_value(disp, comp_num)
+                    html = build_html(disp, f"{comp_num:.1f}", "%", led)
+
+                elif disp.endswith("(Hz)") and comp_is_num:
+                    led = led_class_from_value(disp, comp_num)
+                    html = build_html(disp, f"{comp_num:.1f}", "Hz", led)
+
+                elif disp.endswith("(L/s)") and comp_is_num:
+                    led = led_class_from_value(disp, comp_num)
+                    html = build_html(disp, f"{comp_num:.1f}", "L/s", led)
+
+                # DP and Pressure are numeric points -> show Pa
+                elif ("DP" in disp or "Pressure" in disp) and comp_is_num:
+                    led = led_class_from_value(disp, comp_num)
+                    html = build_html(disp, f"{comp_num:.0f}", "Pa", led)
+
+                # Special formatting for HW Pump 4 Flow -> 0.000 kg/s
+                elif disp == "Pump 4 Flow" and comp_is_num:
+                    led = led_class_from_value(disp, comp_num)  # will be led-off
+                    html = build_html(disp, f"{comp_num:.3f}", "kg/s", led)
+
                 else:
-                    # Special formatting for HW Pump 4 Flow -> 0.000 kg/s
-                    if disp == "Pump 4 Flow":
-                        led = led_class_from_value(disp, comp)  # will be led-off
-                        html = build_html(disp, f"{float(comp):.3f}", "kg/s", led)
-                    else:
-                        led = led_class_from_value(disp, comp)
-                        html = build_html(disp, str(comp), "", led)
+                    # Strings like NORMAL / ON / OFF / etc.
+                    led = led_class_from_value(disp, comp)
+                    html = build_html(disp, str(comp), "", led)
+
                 cls = ""
+
             tags.append({"html": html, "left": item["left"], "top": item["top"], "class": cls})
             continue
 
@@ -1031,7 +1201,6 @@ with tab_ahu:
     render_background_with_tags(ahu_b64, make_tags(AHU_LAYOUT), canvas_width_px=1500, height_px=760)
 
 with tab_hw:
-    st.subheader("Hot Water Plant – closest OA match (filtered by Occupied if schedule column exists)")
     st.caption(header_caption())
     render_background_with_tags(hw_b64, make_tags(HW_LAYOUT), canvas_width_px=1500, height_px=900)
 
@@ -1084,8 +1253,16 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "Supply Fan VFD Alarm": computed_value("Supply Fan VFD Alarm"),
             "CHW Valve Position (%)": computed_value("CHW Valve Position (%)"),
             "HW Valve Position (%)": computed_value("HW Valve Position (%)"),
+            "HW Supply (SP / T)": computed_value("HW Supply (SP / T)"),
+            "HW DP (Supply-Return)": computed_value("HW DP (Supply-Return)"),
             "Boiler 1 Status": computed_value("Boiler 1 Status"),
+            "Boiler 1 Flow Switch": computed_value("Boiler 1 Flow Switch"),
+            "Boiler 1 Alarm": computed_value("Boiler 1 Alarm"),
+            "Boiler 1 Gas Pressure Alarm": computed_value("Boiler 1 Gas Pressure Alarm"),
             "Boiler 2 Status": computed_value("Boiler 2 Status"),
+            "Boiler 2 Flow Switch": computed_value("Boiler 2 Flow Switch"),
+            "Boiler 2 Alarm": computed_value("Boiler 2 Alarm"),
+            "Boiler 2 Gas Pressure Alarm": computed_value("Boiler 2 Gas Pressure Alarm"),
             "Pump 3 Status": computed_value("Pump 3 Status"),
             "Pump 4 Status": computed_value("Pump 4 Status"),
             "Pump 4 Flow": computed_value("Pump 4 Flow"),
@@ -1100,4 +1277,3 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
     )
 
 st.caption("If you don’t see images: make sure the .svg files are in the same folder you run Streamlit from.")
-
