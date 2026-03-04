@@ -1205,7 +1205,7 @@ with tab_hw:
     render_background_with_tags(hw_b64, make_tags(HW_LAYOUT), canvas_width_px=1500, height_px=900)
 
 with tab_chw:
-    st.subheader("Chilled Water Plant – closest OA match (filtered by Occupied if schedule column exists)")
+    #st.subheader("Chilled Water Plant – closest OA match (filtered by Occupied if schedule column exists)")
     st.caption(header_caption())
     render_background_with_tags(chw_b64, make_tags(CHW_LAYOUT), canvas_width_px=1500, height_px=900)
 
