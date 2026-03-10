@@ -286,7 +286,7 @@ df[oa_col] = pd.to_numeric(df[oa_col], errors="coerce")
 # ============================================================
 # 5) Occupancy filtering
 # ============================================================
-df_filt = df
+df_filt = df.copy()
 occ_filter_used = False
 
 if occ_col is not None:
@@ -346,11 +346,11 @@ CHW_SUP_TEMP_WANTED = "CHILLED WATER LOOP CHW SUPPLY OUTLET:System Node Temperat
 CHW_SUP_SETP_WANTED = "CHILLED WATER LOOP CHW SUPPLY OUTLET:System Node Setpoint Temperature [C](Hourly)"
 CHW_RTN_TEMP_WANTED = "CHILLED WATER LOOP CHW DEMAND OUTLET:System Node Temperature [C](Hourly)"
 
-# --- CHW bypass wanted columns (you added these to the IDF) ---
+# --- CHW bypass wanted columns ---
 CHW_SUP_BYPASS_MDOT_WANTED = "CHILLED WATER LOOP CHW SUPPLY BYPASS INLET:System Node Mass Flow Rate [kg/s](Hourly)"
 CHW_DEM_BYPASS_MDOT_WANTED = "CHILLED WATER LOOP CHW DEMAND BYPASS INLET:System Node Mass Flow Rate [kg/s](Hourly)"
 
-# --- HW pump electrical points (optional to display later) ---
+# --- HW pump electrical points ---
 HW_PUMP_PWR_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Rate [W](Hourly)"
 HW_PUMP_EN_WANTED = "HOT WATER LOOP HW SUPPLY PUMP:Pump Electricity Energy [J](Hourly)"
 
@@ -360,7 +360,7 @@ FAN_MDOT_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Mass Flow Rate
 # --- AHU pressure (real point from CSV) ---
 AHU_PRESSURE_WANTED = "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Pressure [Pa](Hourly)"
 
-# --- HW plant pressures for DP sensor ---
+# --- HW plant pressures for actual DP sensor only ---
 HW_PUMP_INLET_P_WANTED = "Hot Water Loop HW Supply Inlet:System Node Pressure [Pa](Hourly)"
 HW_BOILER_OUTLET_P_WANTED = "Main Boiler HW Outlet:System Node Pressure [Pa](Hourly)"
 
@@ -372,7 +372,7 @@ MAP_WANTED = {
     "Supply Air Temp": "AHU 1 FLOORS 1-3 SUPPLY FAN OUTLET:System Node Temperature [C](Hourly)",
     # AHU pressure
     "Supply Fan Outlet Pressure": AHU_PRESSURE_WANTED,
-    # Zone thermostat setpoints (one zone only)
+    # Zone thermostat setpoints
     "Zone Heating Setpoint": f"{ZONE_FOR_SETPOINTS}:Zone Thermostat Heating Setpoint Temperature [C](Hourly)",
     "Zone Cooling Setpoint": f"{ZONE_FOR_SETPOINTS}:Zone Thermostat Cooling Setpoint Temperature [C](Hourly)",
     # Coil flows (AHU)
@@ -385,7 +385,7 @@ MAP_WANTED = {
     "Pump 3 Flow": "HOT WATER LOOP HW SUPPLY PUMP:Pump Mass Flow Rate [kg/s](Hourly)",
     "HW Pump Power": HW_PUMP_PWR_WANTED,
     "HW Pump Energy": HW_PUMP_EN_WANTED,
-    # HW plant pressures for DP sensor
+    # HW plant pressures
     "HW Pump Inlet Pressure": HW_PUMP_INLET_P_WANTED,
     "HW Boiler Outlet Pressure": HW_BOILER_OUTLET_P_WANTED,
     # CHW pumps / plant
@@ -427,11 +427,46 @@ def v(disp: str):
 FAN_MAX_M3S = 14.16  # design max supply flow (m3/s) used for OA damper %
 
 CHW_MAX_M3S = 1.14e-2  # cooling coil max water flow (m3/s) -> 100% valve
-HW_MAX_M3S = 9.50e-3  # heating coil max water flow (m3/s) -> 100% valve
+HW_MAX_M3S = 9.50e-3   # heating coil max water flow (m3/s) -> 100% valve
 
 RHO_WATER = 1000.0  # kg/m3 proxy conversion for water
 CHW_MAX_KGS = CHW_MAX_M3S * RHO_WATER
 HW_MAX_KGS = HW_MAX_M3S * RHO_WATER
+
+# ============================================================
+# HW DP logic constants
+# HW DP Setpoint:
+# - 69 kPa when Pump 3 flow >= 9 kg/s
+# - 16 kPa when Pump 3 flow < 9 kg/s
+#
+# HW DP formula:
+# ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
+#
+# IMPORTANT:
+# mdot_design uses the SAME denominator as HW Pump 3 Speed (%),
+# i.e. HW_PUMP3_MAX_KGS_PROXY
+# ============================================================
+HW_DP_HIGH_SETPOINT_KPA = 69.0
+HW_DP_LOW_SETPOINT_KPA = 16.0
+HW_DP_FLOW_SWITCH_KGS = 9.0
+
+# ============================================================
+# CHW DP logic constants
+# CHW DP Setpoint:
+# - 60 kPa when CHW pump flow > 2.6 kg/s
+# - 16 kPa when 0 < CHW pump flow <= 2.6 kg/s
+# - 0 kPa when CHW pump flow = 0
+#
+# CHW DP formula:
+# ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
+#
+# IMPORTANT:
+# mdot_design uses the SAME denominator as CHW Pump 1 Speed (%),
+# i.e. CHW_PUMP_MAX_KGS_PROXY
+# ============================================================
+CHW_DP_HIGH_SETPOINT_KPA = 60.0
+CHW_DP_LOW_SETPOINT_KPA = 16.0
+CHW_DP_FLOW_SWITCH_KGS = 2.6
 
 
 def _chw_pump_max_flow_from_csv():
@@ -495,7 +530,6 @@ def computed_value(disp: str):
         return "ON"
 
     if disp == "Supply Fan Status":
-        # Prefer fan power > 0, fallback to flow > 0
         p = v("Supply Fan Power")
         f = v("Supply Fan Flow")
         try:
@@ -540,7 +574,7 @@ def computed_value(disp: str):
         f = v("Supply Fan Flow")
         if f is None or (isinstance(f, float) and pd.isna(f)):
             return None
-        if FAN_MAX_KGS_PROXY is None:
+        if FAN_MAX_KGS_PROXY is None or FAN_MAX_KGS_PROXY <= 0:
             return None
         try:
             pct = 100.0 * float(f) / float(FAN_MAX_KGS_PROXY)
@@ -585,18 +619,57 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # HW Differential Pressure (DP) sensor (Pa)
-    # DP = P(Boiler Outlet / Supply) - P(Pump Inlet / Return)
+    # HW Differential Pressure Actual (sensor) from E+ pressures
+    # Returned in Pa
     # -------------------------
-    if disp == "HW DP (Supply-Return)":
-        p_hi = v("HW Boiler Outlet Pressure")   # supply side
-        p_lo = v("HW Pump Inlet Pressure")      # return side
+    if disp == "HW DP Actual":
+        p_hi = v("HW Boiler Outlet Pressure")
+        p_lo = v("HW Pump Inlet Pressure")
         if p_hi is None or p_lo is None:
             return None
         if (isinstance(p_hi, float) and pd.isna(p_hi)) or (isinstance(p_lo, float) and pd.isna(p_lo)):
             return None
         try:
             return float(p_hi) - float(p_lo)
+        except Exception:
+            return None
+
+    # -------------------------
+    # HW DP Setpoint (kPa)
+    # - 69 kPa when Pump 3 flow >= 9 kg/s
+    # - 16 kPa when Pump 3 flow < 9 kg/s
+    # -------------------------
+    if disp == "HW DP Setpoint":
+        mdot = v("Pump 3 Flow")
+        if mdot is None or (isinstance(mdot, float) and pd.isna(mdot)):
+            return None
+        try:
+            mdot = float(mdot)
+            if mdot <= 0.0:
+                return 0.0
+            return HW_DP_LOW_SETPOINT_KPA if mdot < HW_DP_FLOW_SWITCH_KGS else HW_DP_HIGH_SETPOINT_KPA
+        except Exception:
+            return None
+
+    # -------------------------
+    # HW DP (kPa)
+    # ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
+    # mdot_design uses the SAME denominator as HW Pump 3 Speed (%)
+    # i.e. HW_PUMP3_MAX_KGS_PROXY
+    # -------------------------
+    if disp == "HW DP":
+        mdot = v("Pump 3 Flow")
+        if mdot is None or (isinstance(mdot, float) and pd.isna(mdot)):
+            return None
+        if HW_PUMP3_MAX_KGS_PROXY is None or HW_PUMP3_MAX_KGS_PROXY <= 0:
+            return None
+        try:
+            mdot = float(mdot)
+            if mdot <= 0.0:
+                return 0.0
+            dp_setpoint = HW_DP_LOW_SETPOINT_KPA if mdot < HW_DP_FLOW_SWITCH_KGS else HW_DP_HIGH_SETPOINT_KPA
+            dp_calc = dp_setpoint * (mdot / float(HW_PUMP3_MAX_KGS_PROXY)) ** 2
+            return max(0.0, dp_calc)
         except Exception:
             return None
 
@@ -622,9 +695,7 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # NEW: Flow switch per boiler (BMS-style)
-    # - Boiler 1 Flow Switch: ON only if Boiler 1 is ON AND Pump 3 flow > 0
-    # - Boiler 2 Flow Switch: ON only if Boiler 2 is ON AND Pump 3 flow > 0 (your boiler 2 is OFF -> OFF)
+    # Flow switch per boiler
     # -------------------------
     if disp == "Boiler 1 Flow Switch":
         b1 = computed_value("Boiler 1 Status")
@@ -655,7 +726,7 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # Boiler alarms + gas pressure alarms (both boilers)
+    # Boiler alarms + gas pressure alarms
     # -------------------------
     if disp == "Boiler 1 Alarm":
         s = computed_value("Boiler 1 Status")
@@ -706,7 +777,7 @@ def computed_value(disp: str):
         f = v("Pump 3 Flow")
         if f is None or (isinstance(f, float) and pd.isna(f)):
             return None
-        if HW_PUMP3_MAX_KGS_PROXY is None:
+        if HW_PUMP3_MAX_KGS_PROXY is None or HW_PUMP3_MAX_KGS_PROXY <= 0:
             return None
         try:
             pct = 100.0 * float(f) / float(HW_PUMP3_MAX_KGS_PROXY)
@@ -736,7 +807,7 @@ def computed_value(disp: str):
         return "NORMAL"
 
     # -------------------------
-    # HW SUPPLY combined setpoint + temp (ONE BOX, HORIZONTAL)
+    # HW SUPPLY combined setpoint + temp
     # -------------------------
     if disp == "HW Supply (SP / T)":
         sp = v("HW SUPP SETPNT")
@@ -751,8 +822,9 @@ def computed_value(disp: str):
             return f"SP: {sp_f:.1f}°C&nbsp;&nbsp;&nbsp;T: {t_f:.1f}°C"
         except Exception:
             return None
-            # -------------------------
-    # CHW SUPPLY combined setpoint + temp (ONE BOX, HORIZONTAL)
+
+    # -------------------------
+    # CHW SUPPLY combined setpoint + temp
     # -------------------------
     if disp == "CHW Supply (SP / T)":
         sp = v("CHW SUPP SETPNT")
@@ -769,7 +841,7 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # CHW bypass flow & bypass “valve” position (PROXY)
+    # CHW bypass flow & bypass “valve” position (proxy)
     # -------------------------
     if disp == "CHW Supply Bypass (%)":
         bypass = v("CHW Supply Bypass Flow")
@@ -800,6 +872,53 @@ def computed_value(disp: str):
                 return 0.0
             pct = 100.0 * float(bypass) / pump_f
             return max(0.0, min(100.0, pct))
+        except Exception:
+            return None
+
+    # -------------------------
+    # CHW DP Setpoint (kPa)
+    # - 60 kPa when flow > 2.6 kg/s
+    # - 16 kPa when 0 < flow <= 2.6 kg/s
+    # - 0 kPa when flow = 0
+    # -------------------------
+    if disp == "CHW DP Setpoint":
+        mdot = v("CHW Pump Flow")
+        if mdot is None or (isinstance(mdot, float) and pd.isna(mdot)):
+            return None
+        try:
+            mdot = float(mdot)
+            if mdot <= 0.0:
+                return 0.0
+            elif mdot > CHW_DP_FLOW_SWITCH_KGS:
+                return CHW_DP_HIGH_SETPOINT_KPA
+            else:
+                return CHW_DP_LOW_SETPOINT_KPA
+        except Exception:
+            return None
+
+    # -------------------------
+    # CHW DP (kPa)
+    # ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
+    # mdot_design uses same denominator as CHW Pump 1 Speed (%)
+    # i.e. CHW_PUMP_MAX_KGS_PROXY
+    # -------------------------
+    if disp == "CHW DP":
+        mdot = v("CHW Pump Flow")
+        if mdot is None or (isinstance(mdot, float) and pd.isna(mdot)):
+            return None
+        if CHW_PUMP_MAX_KGS_PROXY is None or CHW_PUMP_MAX_KGS_PROXY <= 0:
+            return None
+        try:
+            mdot = float(mdot)
+            if mdot <= 0.0:
+                return 0.0
+            elif mdot > CHW_DP_FLOW_SWITCH_KGS:
+                dp_setpoint = CHW_DP_HIGH_SETPOINT_KPA
+            else:
+                dp_setpoint = CHW_DP_LOW_SETPOINT_KPA
+
+            dp_calc = dp_setpoint * (mdot / float(CHW_PUMP_MAX_KGS_PROXY)) ** 2
+            return max(0.0, dp_calc)
         except Exception:
             return None
 
@@ -837,7 +956,7 @@ def computed_value(disp: str):
         f = v("CHW Pump Flow")
         if f is None or (isinstance(f, float) and pd.isna(f)):
             return None
-        if CHW_PUMP_MAX_KGS_PROXY is None:
+        if CHW_PUMP_MAX_KGS_PROXY is None or CHW_PUMP_MAX_KGS_PROXY <= 0:
             return None
         try:
             pct = 100.0 * float(f) / float(CHW_PUMP_MAX_KGS_PROXY)
@@ -870,7 +989,7 @@ def computed_value(disp: str):
     if disp == "CHW2 VFD Alarm":
         return "NORMAL"
 
-    # Combined zone setpoints in ONE box (two lines)
+    # Combined zone setpoints in one box
     if disp == "Zone Setpoints (H/C)":
         h = v("Zone Heating Setpoint")
         c = v("Zone Cooling Setpoint")
@@ -884,7 +1003,6 @@ def computed_value(disp: str):
             return None
 
     return None
- 
 
 
 # ============================================================
@@ -896,17 +1014,13 @@ AHU_LAYOUT = [
     {"disp": "Mixed Air Temp", "left": "37%", "top": "39%"},
     {"disp": "Supply Air Temp", "left": "78%", "top": "39%"},
     {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "25%"},
-    # dummy safety/status points
     {"disp": "FreezeStat", "left": "80%", "top": "2%"},
     {"disp": "Pressure Switch", "left": "67%", "top": "2%"},
-    # fan VFD-style proxy points (UNCHANGED positions)
     {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
     {"disp": "Supply Fan VFD Output (Hz)", "left": "60%", "top": "81%"},
     {"disp": "Supply Fan VFD Alarm", "left": "60%", "top": "90%"},
-    # enable/status placed to the RIGHT (doesn't move VFD tags)
     {"disp": "Supply Fan Enable", "left": "47%", "top": "74%"},
     {"disp": "Supply Fan Status", "left": "47%", "top": "84%"},
-    #
     {"disp": "OA Damper Position (%)", "left": "17%", "top": "72%"},
     {"disp": "Return Damper Position (%)", "left": "15%", "top": "21%"},
     {"disp": "CHW Valve Position (%)", "left": "63%", "top": "28%"},
@@ -914,32 +1028,27 @@ AHU_LAYOUT = [
 ]
 
 HW_LAYOUT = [
-    # combined supply box (SP / T)
     {"disp": "HW Supply (SP / T)", "left": "44%", "top": "10%"},
-    # DP sensor readout
-    {"disp": "HW DP (Supply-Return)", "left": "4%", "top": "22%"},
+    {"disp": "HW DP", "left": "4%", "top": "21%"},
+    {"disp": "HW DP Setpoint", "left": "4%", "top": "28%"},
     {"disp": "HW RTN TEMP", "left": "42%", "top": "54%"},
 
-    # Boiler 1 block
     {"disp": "Boiler 1 Status", "left": "88%", "top": "20%"},
     {"disp": "Boiler 1 Flow Switch", "left": "88%", "top": "28%"},
     {"disp": "Boiler 1 Alarm", "left": "88%", "top": "36%"},
     {"disp": "Boiler 1 Gas Pressure Alarm", "left": "88%", "top": "44%"},
 
-    # Boiler 2 block (OFF)
     {"disp": "Boiler 2 Status", "left": "88%", "top": "60%"},
     {"disp": "Boiler 2 Flow Switch", "left": "88%", "top": "68%"},
     {"disp": "Boiler 2 Alarm", "left": "88%", "top": "76%"},
     {"disp": "Boiler 2 Gas Pressure Alarm", "left": "88%", "top": "84%"},
 
-    # Pump 3 (real)
     {"disp": "Pump 3 Status", "left": "25%", "top": "16%"},
     {"disp": "Pump 3 Flow", "left": "25%", "top": "23%"},
     {"disp": "HW Pump 3 Speed (%)", "left": "25%", "top": "30%"},
     {"disp": "HW Pump 3 VFD Output (Hz)", "left": "37%", "top": "23%"},
     {"disp": "HW Pump 3 VFD Alarm", "left": "37%", "top": "30%"},
 
-    # Pump 4 (dummy)
     {"disp": "Pump 4 Status", "left": "17%", "top": "71%"},
     {"disp": "Pump 4 Flow", "left": "17%", "top": "78%"},
     {"disp": "HW Pump 4 Speed (%)", "left": "17%", "top": "85%"},
@@ -950,16 +1059,15 @@ HW_LAYOUT = [
 CHW_LAYOUT = [
     {"disp": "CHW Flow Meter (L/s)", "left": "64%", "top": "1%"},
     {"disp": "CHW Supply (SP / T)", "left": "78%", "top": "1%"},
+    {"disp": "CHW DP", "left": "8%", "top": "21%"},
+    {"disp": "CHW DP Setpoint", "left": "8%", "top": "28%"},
     {"disp": "CHW RTN TEMP", "left": "58.5%", "top": "51%"},
-    # BYPASS (new)
     {"disp": "CHW Supply Bypass (%)", "left": "24%", "top": "30%"},
-    # Pump 1 table
     {"disp": "CHW Pump 1 Enable", "left": "43%", "top": "15%"},
     {"disp": "CHW Pump 1 Status", "left": "43%", "top": "22%"},
     {"disp": "CHW Pump 1 Speed (%)", "left": "55%", "top": "15%"},
     {"disp": "CHW VFD Output (Hz)", "left": "55%", "top": "22%"},
     {"disp": "CHW VFD Alarm", "left": "55%", "top": "29%"},
-    # Pump 2 table (dummy)
     {"disp": "CHW Pump 2 Enable", "left": "34%", "top": "79%"},
     {"disp": "CHW Pump 2 Status", "left": "34%", "top": "86%"},
     {"disp": "CHW Pump 2 Speed (%)", "left": "34%", "top": "93%"},
@@ -980,11 +1088,9 @@ def make_tags(layout: List[Dict[str, Any]]):
         if val is None or (isinstance(val, float) and pd.isna(val)):
             return "led-off"
 
-        # Force HW Pump 4 Flow to look inactive (grey LED)
         if disp == "Pump 4 Flow":
             return "led-off"
 
-        # Strings: ON/OFF + Alarm-like words
         if isinstance(val, str):
             v2 = val.strip().upper()
 
@@ -1012,7 +1118,10 @@ def make_tags(layout: List[Dict[str, Any]]):
                 return "led-bad"
             return "led-ok"
 
-        if "DP" in disp or "Pressure" in disp:
+        if disp in ("HW DP", "HW DP Setpoint", "CHW DP", "CHW DP Setpoint"):
+            return "led-ok"
+
+        if "Pressure" in disp:
             return "led-ok"
 
         if "Power" in disp or "Elec" in disp:
@@ -1035,7 +1144,6 @@ def make_tags(layout: List[Dict[str, Any]]):
 
         if "Bypass (%)" in disp:
             return "led-ok"
-        
 
         return "led-ok"
 
@@ -1051,7 +1159,6 @@ def make_tags(layout: List[Dict[str, Any]]):
     computed_points = (
         "FreezeStat",
         "Pressure Switch",
-        # AHU fan points
         "Supply Fan Enable",
         "Supply Fan Status",
         "OA Damper Position (%)",
@@ -1061,25 +1168,22 @@ def make_tags(layout: List[Dict[str, Any]]):
         "Supply Fan VFD Alarm",
         "CHW Valve Position (%)",
         "HW Valve Position (%)",
-        # HW combined supply
         "HW Supply (SP / T)",
-        # DP point
-        "HW DP (Supply-Return)",
-        # NEW: per-boiler flow switches + boiler alarms
+        "HW DP",
+        "HW DP Setpoint",
+        "HW DP Actual",
         "Boiler 1 Flow Switch",
         "Boiler 2 Flow Switch",
         "Boiler 1 Alarm",
         "Boiler 2 Alarm",
         "Boiler 1 Gas Pressure Alarm",
         "Boiler 2 Gas Pressure Alarm",
-        # statuses
         "Boiler 1 Status",
         "Boiler 2 Status",
         "Pump 3 Status",
         "Pump 4 Status",
         "Pump 4 Flow",
         "Zone Setpoints (H/C)",
-        # CHW computed points
         "CHW Flow Meter (L/s)",
         "CHW Pump 1 Enable",
         "CHW Pump 1 Status",
@@ -1091,30 +1195,28 @@ def make_tags(layout: List[Dict[str, Any]]):
         "CHW Pump 2 Speed (%)",
         "CHW2 VFD Output (Hz)",
         "CHW2 VFD Alarm",
-        # HW computed pump VFD points
         "HW Pump 3 Speed (%)",
         "HW Pump 3 VFD Output (Hz)",
         "HW Pump 3 VFD Alarm",
         "HW Pump 4 Speed (%)",
         "HW Pump 4 VFD Output (Hz)",
         "HW Pump 4 VFD Alarm",
-        # CHW bypass computed points (% only; flow comes from CSV mapping)
         "CHW Supply Bypass (%)",
         "CHW Demand Bypass (%)",
         "CHW Supply (SP / T)",
+        "CHW DP",
+        "CHW DP Setpoint",
     )
 
     for item in layout:
         disp = item["disp"]
 
-        # Computed points
         if disp in computed_points:
             comp = computed_value(disp)
             if comp is None:
                 html = build_html(disp, "MISSING", "", "led-off")
                 cls = "inactive"
             else:
-                # Decide if it's numeric
                 comp_is_num = False
                 comp_num = None
                 try:
@@ -1135,18 +1237,19 @@ def make_tags(layout: List[Dict[str, Any]]):
                     led = led_class_from_value(disp, comp_num)
                     html = build_html(disp, f"{comp_num:.1f}", "L/s", led)
 
-                # DP and Pressure are numeric points -> show Pa
-                elif ("DP" in disp or "Pressure" in disp) and comp_is_num:
+                elif disp in ("HW DP", "HW DP Setpoint", "CHW DP", "CHW DP Setpoint") and comp_is_num:
+                    led = led_class_from_value(disp, comp_num)
+                    html = build_html(disp, f"{comp_num:.1f}", "kPa", led)
+
+                elif "Pressure" in disp and comp_is_num:
                     led = led_class_from_value(disp, comp_num)
                     html = build_html(disp, f"{comp_num:.0f}", "Pa", led)
 
-                # Special formatting for HW Pump 4 Flow -> 0.000 kg/s
                 elif disp == "Pump 4 Flow" and comp_is_num:
-                    led = led_class_from_value(disp, comp_num)  # will be led-off
+                    led = led_class_from_value(disp, comp_num)
                     html = build_html(disp, f"{comp_num:.3f}", "kg/s", led)
 
                 else:
-                    # Strings like NORMAL / ON / OFF / etc.
                     led = led_class_from_value(disp, comp)
                     html = build_html(disp, str(comp), "", led)
 
@@ -1155,7 +1258,6 @@ def make_tags(layout: List[Dict[str, Any]]):
             tags.append({"html": html, "left": item["left"], "top": item["top"], "class": cls})
             continue
 
-        # CSV-mapped points
         val = v(disp)
 
         if MAP.get(disp) is None:
@@ -1165,7 +1267,6 @@ def make_tags(layout: List[Dict[str, Any]]):
             led = led_class_from_value(disp, val)
             cls = ""
 
-            # Format by type
             if "SETP" in disp.upper() or "SETPOINT" in disp.upper():
                 html = build_html(disp, f"{float(val):.1f}", "°C", led)
             elif "TEMP" in disp.upper() or "Temp" in disp:
@@ -1205,7 +1306,6 @@ with tab_hw:
     render_background_with_tags(hw_b64, make_tags(HW_LAYOUT), canvas_width_px=1500, height_px=900)
 
 with tab_chw:
-    #st.subheader("Chilled Water Plant – closest OA match (filtered by Occupied if schedule column exists)")
     st.caption(header_caption())
     render_background_with_tags(chw_b64, make_tags(CHW_LAYOUT), canvas_width_px=1500, height_px=900)
 
@@ -1254,7 +1354,9 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "CHW Valve Position (%)": computed_value("CHW Valve Position (%)"),
             "HW Valve Position (%)": computed_value("HW Valve Position (%)"),
             "HW Supply (SP / T)": computed_value("HW Supply (SP / T)"),
-            "HW DP (Supply-Return)": computed_value("HW DP (Supply-Return)"),
+            "HW DP": computed_value("HW DP"),
+            "HW DP Setpoint": computed_value("HW DP Setpoint"),
+            "HW DP Actual (Pa)": computed_value("HW DP Actual"),
             "Boiler 1 Status": computed_value("Boiler 1 Status"),
             "Boiler 1 Flow Switch": computed_value("Boiler 1 Flow Switch"),
             "Boiler 1 Alarm": computed_value("Boiler 1 Alarm"),
@@ -1269,10 +1371,18 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "Zone Setpoints (H/C)": computed_value("Zone Setpoints (H/C)"),
             "CHW Supply Bypass (%)": computed_value("CHW Supply Bypass (%)"),
             "CHW Demand Bypass (%)": computed_value("CHW Demand Bypass (%)"),
+            "CHW DP": computed_value("CHW DP"),
+            "CHW DP Setpoint": computed_value("CHW DP Setpoint"),
             "FAN_MAX_KGS_PROXY used": FAN_MAX_KGS_PROXY,
             "CHW_PUMP_MAX_KGS_PROXY used": CHW_PUMP_MAX_KGS_PROXY,
             "HW_PUMP3_MAX_KGS_PROXY used": HW_PUMP3_MAX_KGS_PROXY,
             "FAN_MAX_M3S used (OA only)": FAN_MAX_M3S,
+            "HW_DP_HIGH_SETPOINT_KPA": HW_DP_HIGH_SETPOINT_KPA,
+            "HW_DP_LOW_SETPOINT_KPA": HW_DP_LOW_SETPOINT_KPA,
+            "HW_DP_FLOW_SWITCH_KGS": HW_DP_FLOW_SWITCH_KGS,
+            "CHW_DP_HIGH_SETPOINT_KPA": CHW_DP_HIGH_SETPOINT_KPA,
+            "CHW_DP_LOW_SETPOINT_KPA": CHW_DP_LOW_SETPOINT_KPA,
+            "CHW_DP_FLOW_SWITCH_KGS": CHW_DP_FLOW_SWITCH_KGS,
         }
     )
 
