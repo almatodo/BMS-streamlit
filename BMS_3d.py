@@ -435,16 +435,6 @@ HW_MAX_KGS = HW_MAX_M3S * RHO_WATER
 
 # ============================================================
 # HW DP logic constants
-# HW DP Setpoint:
-# - 69 kPa when Pump 3 flow >= 9 kg/s
-# - 16 kPa when Pump 3 flow < 9 kg/s
-#
-# HW DP formula:
-# ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
-#
-# IMPORTANT:
-# mdot_design uses the SAME denominator as HW Pump 3 Speed (%),
-# i.e. HW_PUMP3_MAX_KGS_PROXY
 # ============================================================
 HW_DP_HIGH_SETPOINT_KPA = 69.0
 HW_DP_LOW_SETPOINT_KPA = 16.0
@@ -452,21 +442,15 @@ HW_DP_FLOW_SWITCH_KGS = 9.0
 
 # ============================================================
 # CHW DP logic constants
-# CHW DP Setpoint:
-# - 60 kPa when CHW pump flow > 2.6 kg/s
-# - 16 kPa when 0 < CHW pump flow <= 2.6 kg/s
-# - 0 kPa when CHW pump flow = 0
-#
-# CHW DP formula:
-# ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
-#
-# IMPORTANT:
-# mdot_design uses the SAME denominator as CHW Pump 1 Speed (%),
-# i.e. CHW_PUMP_MAX_KGS_PROXY
 # ============================================================
 CHW_DP_HIGH_SETPOINT_KPA = 60.0
 CHW_DP_LOW_SETPOINT_KPA = 16.0
 CHW_DP_FLOW_SWITCH_KGS = 2.6
+
+# ============================================================
+# Supply Air Pressure fixed setpoint
+# ============================================================
+SUPPLY_AIR_PRESSURE_SETPOINT_KPA = 87.0
 
 
 def _chw_pump_max_flow_from_csv():
@@ -568,6 +552,21 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
+    # Supply Air Pressure (SP / P)
+    # -------------------------
+    if disp == "Supply Air Pressure (SP / P)":
+        p = v("Supply Fan Outlet Pressure")
+        if p is None or (isinstance(p, float) and pd.isna(p)):
+            return None
+        try:
+            p_pa = float(p)
+            p_kpa = p_pa / 1000.0
+            sp_kpa = SUPPLY_AIR_PRESSURE_SETPOINT_KPA
+            return f"SP: {sp_kpa:.1f} kPa&nbsp;&nbsp;&nbsp;P: {p_kpa:.2f} kPa"
+        except Exception:
+            return None
+
+    # -------------------------
     # AHU Fan VFD-style proxy
     # -------------------------
     if disp == "Supply Fan Speed (%)":
@@ -636,8 +635,6 @@ def computed_value(disp: str):
 
     # -------------------------
     # HW DP Setpoint (kPa)
-    # - 69 kPa when Pump 3 flow >= 9 kg/s
-    # - 16 kPa when Pump 3 flow < 9 kg/s
     # -------------------------
     if disp == "HW DP Setpoint":
         mdot = v("Pump 3 Flow")
@@ -653,10 +650,6 @@ def computed_value(disp: str):
 
     # -------------------------
     # HW DP (kPa)
-    # ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
-    # mdot_design uses the SAME denominator as HW Pump 3 Speed (%)
-    # i.e. HW_PUMP3_MAX_KGS_PROXY
-    # ±2 kPa deterministic noise keyed on row_i for realistic variation
     # -------------------------
     if disp == "HW DP":
         mdot = v("Pump 3 Flow")
@@ -671,7 +664,6 @@ def computed_value(disp: str):
             dp_setpoint = HW_DP_LOW_SETPOINT_KPA if mdot < HW_DP_FLOW_SWITCH_KGS else HW_DP_HIGH_SETPOINT_KPA
             dp_calc = dp_setpoint * (mdot / float(HW_PUMP3_MAX_KGS_PROXY)) ** 2
 
-            # Deterministic noise: varies by row, stable on re-render, ±2 kPa
             rng = np.random.default_rng(seed=int(row_i))
             noise = rng.uniform(-1.5, 1.5)
 
@@ -883,9 +875,6 @@ def computed_value(disp: str):
 
     # -------------------------
     # CHW DP Setpoint (kPa)
-    # - 60 kPa when flow > 2.6 kg/s
-    # - 16 kPa when 0 < flow <= 2.6 kg/s
-    # - 0 kPa when flow = 0
     # -------------------------
     if disp == "CHW DP Setpoint":
         mdot = v("CHW Pump Flow")
@@ -904,10 +893,6 @@ def computed_value(disp: str):
 
     # -------------------------
     # CHW DP (kPa)
-    # ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
-    # mdot_design uses same denominator as CHW Pump 1 Speed (%)
-    # i.e. CHW_PUMP_MAX_KGS_PROXY
-    # ±2 kPa deterministic noise keyed on row_i
     # -------------------------
     if disp == "CHW DP":
         mdot = v("CHW Pump Flow")
@@ -926,7 +911,6 @@ def computed_value(disp: str):
 
             dp_calc = dp_setpoint * (mdot / float(CHW_PUMP_MAX_KGS_PROXY)) ** 2
 
-            # Deterministic noise: varies by row, stable on re-render, ±2 kPa
             rng = np.random.default_rng(seed=int(row_i) + 1000)
             noise = rng.uniform(-1.5, 1.5)
 
@@ -1026,6 +1010,7 @@ AHU_LAYOUT = [
     {"disp": "Mixed Air Temp", "left": "37%", "top": "39%"},
     {"disp": "Supply Air Temp", "left": "78%", "top": "39%"},
     {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "25%"},
+    {"disp": "Supply Air Pressure (SP / P)", "left": "50%", "top": "10%"},
     {"disp": "FreezeStat", "left": "80%", "top": "2%"},
     {"disp": "Pressure Switch", "left": "67%", "top": "2%"},
     {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
@@ -1044,23 +1029,19 @@ HW_LAYOUT = [
     {"disp": "HW DP", "left": "4%", "top": "21%"},
     {"disp": "HW DP Setpoint", "left": "4%", "top": "28%"},
     {"disp": "HW RTN TEMP", "left": "42%", "top": "54%"},
-
     {"disp": "Boiler 1 Status", "left": "88%", "top": "20%"},
     {"disp": "Boiler 1 Flow Switch", "left": "88%", "top": "28%"},
     {"disp": "Boiler 1 Alarm", "left": "88%", "top": "36%"},
     {"disp": "Boiler 1 Gas Pressure Alarm", "left": "88%", "top": "44%"},
-
     {"disp": "Boiler 2 Status", "left": "88%", "top": "60%"},
     {"disp": "Boiler 2 Flow Switch", "left": "88%", "top": "68%"},
     {"disp": "Boiler 2 Alarm", "left": "88%", "top": "76%"},
     {"disp": "Boiler 2 Gas Pressure Alarm", "left": "88%", "top": "84%"},
-
     {"disp": "Pump 3 Status", "left": "25%", "top": "16%"},
     {"disp": "Pump 3 Flow", "left": "25%", "top": "23%"},
     {"disp": "HW Pump 3 Speed (%)", "left": "25%", "top": "30%"},
     {"disp": "HW Pump 3 VFD Output (Hz)", "left": "37%", "top": "23%"},
     {"disp": "HW Pump 3 VFD Alarm", "left": "37%", "top": "30%"},
-
     {"disp": "Pump 4 Status", "left": "17%", "top": "71%"},
     {"disp": "Pump 4 Flow", "left": "17%", "top": "78%"},
     {"disp": "HW Pump 4 Speed (%)", "left": "17%", "top": "85%"},
@@ -1175,6 +1156,7 @@ def make_tags(layout: List[Dict[str, Any]]):
         "Supply Fan Status",
         "OA Damper Position (%)",
         "Return Damper Position (%)",
+        "Supply Air Pressure (SP / P)",
         "Supply Fan Speed (%)",
         "Supply Fan VFD Output (Hz)",
         "Supply Fan VFD Alarm",
@@ -1360,6 +1342,7 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "Supply Fan Status": computed_value("Supply Fan Status"),
             "OA Damper Position (%)": computed_value("OA Damper Position (%)"),
             "Return Damper Position (%)": computed_value("Return Damper Position (%)"),
+            "Supply Air Pressure (SP / P)": computed_value("Supply Air Pressure (SP / P)"),
             "Supply Fan Speed (%)": computed_value("Supply Fan Speed (%)"),
             "Supply Fan VFD Output (Hz)": computed_value("Supply Fan VFD Output (Hz)"),
             "Supply Fan VFD Alarm": computed_value("Supply Fan VFD Alarm"),
@@ -1395,6 +1378,7 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "CHW_DP_HIGH_SETPOINT_KPA": CHW_DP_HIGH_SETPOINT_KPA,
             "CHW_DP_LOW_SETPOINT_KPA": CHW_DP_LOW_SETPOINT_KPA,
             "CHW_DP_FLOW_SWITCH_KGS": CHW_DP_FLOW_SWITCH_KGS,
+            "SUPPLY_AIR_PRESSURE_SETPOINT_KPA": SUPPLY_AIR_PRESSURE_SETPOINT_KPA,
         }
     )
 
