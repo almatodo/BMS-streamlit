@@ -1,9 +1,9 @@
-# bms_app.py
 import base64
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components  # fixes stray </div> by using components.html
@@ -548,11 +548,11 @@ def computed_value(disp: str):
     # AHU dampers
     # -------------------------
     if disp == "OA Damper Position (%)":
-        oa_v = v("OA Vol Flow (StdDens)")
-        if oa_v is None or (isinstance(oa_v, float) and pd.isna(oa_v)):
+        oa_frac = v("OA Flow Fraction (E+)")
+        if oa_frac is None or (isinstance(oa_frac, float) and pd.isna(oa_frac)):
             return None
         try:
-            pct = 100.0 * float(oa_v) / FAN_MAX_M3S
+            pct = 100.0 * float(oa_frac)
             return max(0.0, min(100.0, pct))
         except Exception:
             return None
@@ -656,6 +656,7 @@ def computed_value(disp: str):
     # ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
     # mdot_design uses the SAME denominator as HW Pump 3 Speed (%)
     # i.e. HW_PUMP3_MAX_KGS_PROXY
+    # ±2 kPa deterministic noise keyed on row_i for realistic variation
     # -------------------------
     if disp == "HW DP":
         mdot = v("Pump 3 Flow")
@@ -669,7 +670,12 @@ def computed_value(disp: str):
                 return 0.0
             dp_setpoint = HW_DP_LOW_SETPOINT_KPA if mdot < HW_DP_FLOW_SWITCH_KGS else HW_DP_HIGH_SETPOINT_KPA
             dp_calc = dp_setpoint * (mdot / float(HW_PUMP3_MAX_KGS_PROXY)) ** 2
-            return max(0.0, dp_calc)
+
+            # Deterministic noise: varies by row, stable on re-render, ±2 kPa
+            rng = np.random.default_rng(seed=int(row_i))
+            noise = rng.uniform(-1.5, 1.5)
+
+            return max(0.0, dp_calc + noise)
         except Exception:
             return None
 
@@ -841,7 +847,7 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
-    # CHW bypass flow & bypass “valve” position (proxy)
+    # CHW bypass flow & bypass "valve" position (proxy)
     # -------------------------
     if disp == "CHW Supply Bypass (%)":
         bypass = v("CHW Supply Bypass Flow")
@@ -901,6 +907,7 @@ def computed_value(disp: str):
     # ΔPcalc = ΔPsetpoint * (mdot / mdot_design)^2
     # mdot_design uses same denominator as CHW Pump 1 Speed (%)
     # i.e. CHW_PUMP_MAX_KGS_PROXY
+    # ±2 kPa deterministic noise keyed on row_i
     # -------------------------
     if disp == "CHW DP":
         mdot = v("CHW Pump Flow")
@@ -918,7 +925,12 @@ def computed_value(disp: str):
                 dp_setpoint = CHW_DP_LOW_SETPOINT_KPA
 
             dp_calc = dp_setpoint * (mdot / float(CHW_PUMP_MAX_KGS_PROXY)) ** 2
-            return max(0.0, dp_calc)
+
+            # Deterministic noise: varies by row, stable on re-render, ±2 kPa
+            rng = np.random.default_rng(seed=int(row_i) + 1000)
+            noise = rng.uniform(-1.5, 1.5)
+
+            return max(0.0, dp_calc + noise)
         except Exception:
             return None
 
@@ -1247,7 +1259,7 @@ def make_tags(layout: List[Dict[str, Any]]):
 
                 elif disp == "Pump 4 Flow" and comp_is_num:
                     led = led_class_from_value(disp, comp_num)
-                    html = build_html(disp, f"{comp_num:.3f}", "kg/s", led)
+                    html = build_html(disp, f"{comp_num:.3f}", "L/s", led)
 
                 else:
                     led = led_class_from_value(disp, comp)
@@ -1276,7 +1288,7 @@ def make_tags(layout: List[Dict[str, Any]]):
             elif "Bypass Flow" in disp:
                 html = build_html(disp, f"{float(val):.3f}", "kg/s", led)
             elif disp.endswith("Flow"):
-                html = build_html(disp, f"{float(val):.3f}", "kg/s", led)
+                html = build_html(disp, f"{float(val):.3f}", "L/s", led)
             elif "Energy" in disp:
                 html = build_html(disp, f"{float(val):.0f}", "J", led)
             elif "Power" in disp or "Elec" in disp:
@@ -1386,4 +1398,4 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
         }
     )
 
-st.caption("If you don’t see images: make sure the .svg files are in the same folder you run Streamlit from.")
+st.caption("If you don't see images: make sure the .svg files are in the same folder you run Streamlit from.")
