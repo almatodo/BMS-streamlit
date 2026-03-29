@@ -567,6 +567,20 @@ def computed_value(disp: str):
             return None
 
     # -------------------------
+    # Supply Air Temp (SP / T)
+    # -------------------------
+    if disp == "Supply Air Temp (SP / T)":
+        t = v("Supply Air Temp")
+        if t is None or (isinstance(t, float) and pd.isna(t)):
+            return None
+        try:
+            t_f = float(t)
+            sp_f = round(t_f)
+            return f"SP: {sp_f:.1f}°C&nbsp;&nbsp;&nbsp;T: {t_f:.1f}°C"
+        except Exception:
+            return None
+
+    # -------------------------
     # AHU Fan VFD-style proxy
     # -------------------------
     if disp == "Supply Fan Speed (%)":
@@ -1008,11 +1022,11 @@ AHU_LAYOUT = [
     {"disp": "OA Temp", "left": "1.5%", "top": "41.5%"},
     {"disp": "Return Air Temp", "left": "16%", "top": "33%"},
     {"disp": "Mixed Air Temp", "left": "37%", "top": "39%"},
-    {"disp": "Supply Air Temp", "left": "78%", "top": "39%"},
-    {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "25%"},
-    {"disp": "Supply Air Pressure (SP / P)", "left": "50%", "top": "10%"},
-    {"disp": "FreezeStat", "left": "80%", "top": "2%"},
-    {"disp": "Pressure Switch", "left": "67%", "top": "2%"},
+    {"disp": "Supply Air Temp (SP / T)", "left": "78%", "top": "39%"},
+    {"disp": "Zone Setpoints (H/C)", "left": "78%", "top": "2%"},
+    {"disp": "Supply Air Pressure (SP / P)", "left": "78%", "top": "29%"},
+    {"disp": "FreezeStat", "left": "65%", "top": "2%"},
+    {"disp": "Pressure Switch", "left": "52%", "top": "2%"},
     {"disp": "Supply Fan Speed (%)", "left": "60%", "top": "72%"},
     {"disp": "Supply Fan VFD Output (Hz)", "left": "60%", "top": "81%"},
     {"disp": "Supply Fan VFD Alarm", "left": "60%", "top": "90%"},
@@ -1157,6 +1171,7 @@ def make_tags(layout: List[Dict[str, Any]]):
         "OA Damper Position (%)",
         "Return Damper Position (%)",
         "Supply Air Pressure (SP / P)",
+        "Supply Air Temp (SP / T)",
         "Supply Fan Speed (%)",
         "Supply Fan VFD Output (Hz)",
         "Supply Fan VFD Alarm",
@@ -1343,6 +1358,7 @@ with st.expander("🔎 Verify wiring (Displayed point → CSV column) + selected
             "OA Damper Position (%)": computed_value("OA Damper Position (%)"),
             "Return Damper Position (%)": computed_value("Return Damper Position (%)"),
             "Supply Air Pressure (SP / P)": computed_value("Supply Air Pressure (SP / P)"),
+            "Supply Air Temp (SP / T)": computed_value("Supply Air Temp (SP / T)"),
             "Supply Fan Speed (%)": computed_value("Supply Fan Speed (%)"),
             "Supply Fan VFD Output (Hz)": computed_value("Supply Fan VFD Output (Hz)"),
             "Supply Fan VFD Alarm": computed_value("Supply Fan VFD Alarm"),
